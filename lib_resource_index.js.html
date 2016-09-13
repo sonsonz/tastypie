@@ -52,16 +52,18 @@
 			</li>
 			
 		</ul>
-		<div class="col-sm-3 col-md-3">
-            <form class="navbar-form" role="search">
-                <div class="input-group">
-                    <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
-                    <div class="input-group-btn">
-                        <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+        
+            <div class="col-sm-3 col-md-3">
+                <form class="navbar-form" role="search">
+                    <div class="input-group">
+                        <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
+                        <div class="input-group-btn">
+                            <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+                        </div>
                     </div>
-                </div>
-            </form>
-        </div>
+                </form>
+            </div>
+        
 	</div>
 
 </div>
@@ -135,9 +137,11 @@ var domain           = require( 'domain' )                     // domain
   , Options          = require( '../class/options' )             // Options
   , http             = require( '../http' )                      // http
   , mime             = require( '../mime' )                      // mime
+  , attempt          = require( '../utility').attempt
   , paginator        = require( '../paginator' )                 // paginator
   , exceptions       = require( '../exceptions' )                // exceptions
   , Serializer       = require( '../serializer' )                // serializer
+  , {annotate}       = require('../utility')
   , Cache            = require( '../cache' )
   , Throttle         = require( '../throttle')
   , fields           = require( '../fields' )
@@ -145,8 +149,6 @@ var domain           = require( 'domain' )                     // domain
   , Detail           = require( './detail' )
   , List             = require( './list' )
   , validators       = require( './validator' )
-  , EMPTY_OBJECT     = {}
-  , mutableMethods   = ['put','post','delete', 'patch']
   , optionsSchema
   , filterschema
   , Resource
@@ -154,12 +156,19 @@ var domain           = require( 'domain' )                     // domain
   ;
 
 const PATCH = 'patch';
+const EMPTY_OBJECT     = {}
+const mutableMethods   = ['put','post','delete', 'patch']
 
 filterschema = joi.alternatives().try(
 	joi.any()
 	, joi.array().items( joi.string() )
 );
 
+function annotate( err, bundle ){
+	err.res = bundle.res;
+	err.req = bundle.req;
+	return err;
+}
 
 optionsSchema = joi.object().keys({
 	name          : joi.string().allow(null)
@@ -569,15 +578,11 @@ Resource = new Class({
 	 * @param {Object|Bundle} bundle A bundle representing the current request
 	 **/
 	, dispatch: function dispatch( action, bundle ){
-		var method
-		  , req
-		  , res
+		let method
 		  , err
 		  , results
 		  ;
 
-		req            = bundle.req;
-		res            = bundle.res;
 		bundle.action  = action;
 
 		err = this.check('dispatch', bundle )[0];
@@ -586,20 +591,21 @@ Resource = new Class({
 		err = err ? err : results[0];
 
 		if( err ){
-			err.res = res;
-			err.req = req;
-			return this.exception( err );
+			return this.exception( annotate( err, bundle ) );
 		}
 
 		method = results[1];
 
 		if(this.throttle( bundle )){
-			err = new Boom.create(429);
-			err.req = req;
-			err.res = res;
-			return this.exception( err );
+			return this.exception( annotate( Boom.create(429), bundle ) );
 		}
-		this.domain.run(method.bind( this, bundle ));
+
+		this.domain.run(()=>{
+			let result = attempt(method, [bundle], this )
+			if( result[0] ){
+				this.exception( annotate( result[0], bundle ) );
+			}
+		});
 	}
 
 	/**
@@ -623,7 +629,7 @@ Resource = new Class({
 		}
 
 		code = err.statusCode || err.code || 500;
-		format = this.format( err, this.options.serializer.types );
+		format = this.format( err );
 		err.req = err.res = null;
 
 		this.serialize( {error: err.name, message: err.message, statusCode: code}, format, function( serr, data ){
@@ -651,16 +657,14 @@ Resource = new Class({
 	 * @param {Array} [types] An array of possible content types this resource can deal with.
 	 * @return {String} accepts an accepted format for the the related request
 	 **/
-	, format: function format( bundle, types ){
+	, format: function format( bundle, types=this.options.serializer.types ){
 		var fmt  = bundle.req.query &amp;&amp; bundle.req.query.format
 		  , ct = this.options.serializer.convertFormat( fmt )
 		  ;
 
 		if( fmt &amp;&amp; !ct ){
-			let error = Boom.unsupportedMediaType( 'Unsupported format: ' + fmt )
-			error.req = bundle.req;
-			error.res = bundle.res;
-			return this.emit('error', error);
+			let error = Boom.unsupportedMediaType( 'Unsupported format: ' + fmt );
+			return this.emit('error', annotate( error ) );
 		} else if( fmt &amp;&amp; ct ){
 			return ct;
 		}
@@ -688,19 +692,15 @@ Resource = new Class({
 			  , bundle.req.params
 		);
 
-		obj = this.cache.get( key, function( err, obj ){
-			var that = this;
-
+		obj = this.cache.get( key, ( err, obj )=>{
 			if( obj ){
-				debug("%s %s returning cached object", this.options.apiname, this.options.name );
 				return callback( err, obj );
 			}
-			debug('cahed object miss');
-			this.get_object( bundle, function( err, obj ){
-				that.cache.set( key, obj );
+			this.get_object( bundle, ( err, obj )=>{
+				this.cache.set( key, obj );
 				callback( err, obj );
 			});
-		}.bind( this ) );
+		} );
 
 	}
 
@@ -711,22 +711,15 @@ Resource = new Class({
 	 * @return Object An object containing only serializable data
 	 **/
 	, full_dehydrate: function full_dehydrate( obj, bundle, done ){
-		var ret       = {}
-		  , flds      = this.fields
-		  , dehydrate = this.dehydrate
-		  , that      = this
-		  ;
-
+		let that = this, ret = {}, flds=this.fields;
 		async.forEachOf( flds, function eachfield( fld, field, cb){
 
 			if( !!fld.options.exclude ){
 			  return cb();
 			}
-
+			
 			fld.dehydrate( obj, function asyncFieldDehy( err, data ){
-				var methodname   = 'dehydrate_' + field
-				  , method       = that[ methodname ]
-				  ;
+				let method       = that[ `dehydrate_${field}` ];
 
 				ret[ field ] = data;
 
@@ -737,7 +730,7 @@ Resource = new Class({
 				return cb &amp;&amp; cb( err );
 			});
 		}, function( err ){
-			done( err, dehydrate( ret ) );
+			done( err, that.dehydrate( ret ) );
 		});
 	}
 
@@ -835,27 +828,27 @@ Resource = new Class({
 	 * @param {HttpResponse|Function} cls An HttpResponse function to call to finish the request. Function should accept a response object, and data to send
 	 * @return Resource
 	 **/
-	, respond: function respond( bundle, cls, location, cb ){
-		cls = cls || http.ok;
-		var format = this.format( bundle, this.options.serializer.types )
+
+	// if location is omitted
+	// respond( bundle, cls, callback )
+	, respond: function respond( bundle, cls, loc, cb ){
+		let _cls = cls || http.ok
+		  , format = this.format( bundle )
+		  , _loc = loc
+		  , fn   = cb
 		  , that = this
 		  ;
 
-
-		// if location is omitted
-		// respond( bundle, cls, callback )
-		if( arguments.length === 3 &amp;&amp; typeof location === 'function' ){
-			cb = location;
-			location = '';
+		if( arguments.length === 3 &amp;&amp; typeof loc === 'function' ){
+			fn = _loc;
+			_loc = '';
 		}
 		this.serialize( bundle.data, format, function( err, data ){
-			var reply = cls( bundle.res, data || null, format, location );
-			var mutable = mutableMethods.indexOf( bundle.req.method.toLowerCase() ) !== -1;
+			let reply = _cls( bundle.res, data || null, format, _loc );
+			let mutable = mutableMethods.indexOf( bundle.req.method.toLowerCase() ) !== -1;
 			that.modified = mutable ? (new Date()).toUTCString() : that.modified;
 			that.modified &amp;&amp; reply.header('Last-Modified', that.modified );
-			mutable = null;
-
-			return cb &amp;&amp; cb( null, reply );
+			fn &amp;&amp; fn( null, reply );
 		});
 	}
 
@@ -880,18 +873,21 @@ Resource = new Class({
 		return obj_list;
 	}
 
+    /**
+     * manages request throttling. Default implementation usses the remote address of the incomming request
+     * @method module:tastypie/lib/resource#throttle
+     * @param {module:tastypie/lib/resource~Bundle} bundle A bundle representing the current request
+     * @return {Boolean} true if the request should rejected
+     */
 	, throttle: function throttle( bundle ){
 		var thrtl
 		  , request_id
+ 		  , req
 		  ;
 
-		request_id = util.format(
-			'%s:%s:%s'
-			, bundle.req.method.toLowerCase()
-			, bundle.req.info.remoteAddress || "noaddr"
-			, bundle.req.path
-		);
-		thrtl = this.options.throttle.toThrottle( request_id );
+ 		req        = bundle.req;
+		request_id = `${req.method.toLowerCase()}:${req.info.remoteAddress || "noaddr"}:${req.path}`;
+		thrtl      = this.options.throttle.toThrottle( request_id );
 
 		if( !thrtl ){
 			this.options.throttle.incr( request_id );
@@ -918,7 +914,7 @@ Resource = new Class({
 	 * @return {String}
 	 **/
 	, to_uri: function to_uri( obj, bundle, result ){
-		return urljoin( this.options.apiname, this.options.name, this.pk( obj, bundle, result ) );
+		return urljoin(this.options.apiname, this.options.name, this.pk( obj, bundle, result ) );
 	}
 
 	/**
@@ -965,6 +961,32 @@ Object.defineProperties( Resource.prototype, {
 		}
 	}
 
+	,api:{
+		/**
+		 * @property urls An array of all registered uris on a given resource
+		 * @name urls
+		 * @memberof module:tastypie.resources.Resource
+		 * @type Array
+		 **/
+		set: function( api ){
+			this.options.apiname = api.basepath
+			for( let key of Object.keys( this.fields ) ){
+				let field = this.fields[ key ];
+				if( field.is_related ){
+					field.instance.setOptions({apiname: api.basepath });
+				}
+			}
+		}
+	}
+
+	,prefix:{
+		set: function( prefix ){
+			this.options.name = this.options.name || prefix;
+		}
+		,get: function(){
+			this.options.name;
+		}
+	}
 	, urls: {
 		/**
 		 * @property urls An array of all registered uris on a given resource
@@ -1015,20 +1037,22 @@ module.exports = Resource;
 </div>
 </div>
 
-<div class="modal fade" id="searchResults">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h4 class="modal-title">Search results</h4>
-      </div>
-      <div class="modal-body"></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-      </div>
-    </div><!-- /.modal-content -->
-  </div><!-- /.modal-dialog -->
-</div>
+
+    <div class="modal fade" id="searchResults">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <h4 class="modal-title">Search results</h4>
+          </div>
+          <div class="modal-body"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+          </div>
+        </div><!-- /.modal-content -->
+      </div><!-- /.modal-dialog -->
+    </div>
+
 
 <footer>
 
@@ -1040,7 +1064,7 @@ module.exports = Resource;
 <span class="jsdoc-message">
 	Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.4.0</a>
 	
-		on 2016-07-28T15:22:22-05:00
+		on 2016-09-13T13:55:15-05:00
 	
 	using the <a href="https://github.com/docstrap/docstrap">DocStrap template</a>.
 </span>
@@ -1048,7 +1072,9 @@ module.exports = Resource;
 
 <script src="scripts/docstrap.lib.js"></script>
 <script src="scripts/toc.js"></script>
-<script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
+    <script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
 
 <script>
 $( function () {
@@ -1058,7 +1084,7 @@ $( function () {
 		$this.attr( "id", $this.attr( "id" ).replace( "$", "__" ) );
 	} );
 
-	$( ".tutorial-section pre, .readme-section pre" ).each( function () {
+	$( ".tutorial-section pre, .readme-section pre, pre.prettyprint.source" ).each( function () {
 		var $this = $( this );
 
 		var example = $this.find( "code" );
@@ -1094,8 +1120,7 @@ $( function () {
 	} );
 	$( "#toc" ).toc( {
 		anchorName  : function ( i, heading, prefix ) {
-			var id = $( heading ).attr( "id" );
-			return id && id.replace(/\~/g, '-inner-').replace(/\./g, '-static-') || ( prefix + i );
+			return $( heading ).attr( "id" ) || ( prefix + i );
 		},
 		selectors   : "#toc-content h1,#toc-content h2,#toc-content h3,#toc-content h4",
 		showAndHide : false,
@@ -1121,11 +1146,13 @@ $( function () {
 <!--Google Analytics-->
 
 
-<script type="text/javascript">
-	$(document).ready(function() {
-		SearcherDisplay.init();
-	});
-</script>
+
+    <script type="text/javascript">
+        $(document).ready(function() {
+            SearcherDisplay.init();
+        });
+    </script>
+
 
 </body>
 </html>

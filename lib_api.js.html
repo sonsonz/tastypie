@@ -52,16 +52,18 @@
 			</li>
 			
 		</ul>
-		<div class="col-sm-3 col-md-3">
-            <form class="navbar-form" role="search">
-                <div class="input-group">
-                    <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
-                    <div class="input-group-btn">
-                        <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+        
+            <div class="col-sm-3 col-md-3">
+                <form class="navbar-form" role="search">
+                    <div class="input-group">
+                        <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
+                        <div class="input-group-btn">
+                            <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+                        </div>
                     </div>
-                </div>
-            </form>
-        </div>
+                </form>
+            </div>
+        
 	</div>
 
 </div>
@@ -102,6 +104,7 @@
  **/
 var  Class           = require( './class' ) // this is Class
    , util            = require('util')
+   , joi             = require('joi')
    , Boom            = require('boom')
    , isObject        = require('mout/lang/isObject')
    , has             = require('mout/object/hasOwn')
@@ -112,7 +115,13 @@ var  Class           = require( './class' ) // this is Class
    , endsWithSlash   = /\/$/
    , trailingSlashes = /^\/|\/$/g
    , Api
+   , optionValidator
    ;
+
+optionValidator = joi.object().keys({
+    serializer:joi.object().optional()
+    ,select:joi.string().optional()
+}).unknown()
 
 function onPostAuth( request, reply ){
 	let serializer = this.options.serializer;
@@ -184,9 +193,16 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 		DEFAULT_LIMIT:20
 		,MAX_LIMIT:500
 		, serializer: null
+        , select: null
 	}
 
 	,constructor: function( path,  options ){
+
+        let results = optionValidator.validate( options );
+
+        if( results.error ){
+            throw results.error;
+        }
 		this.setOptions( options );
 		this.basepath  = this.normalizePath( path );
 		this.baseexp   = new RegExp( "^" + this.basepath );
@@ -205,7 +221,7 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 
 	, plug: function( plugin, options, next ){
 		var that = this;
-		this.plg = plugin;
+		this.plg = this.options.select ? plugin.select( this.options.select ) : plugin;
 		for( let key in this.api_cache ){
 			if( this.api_cache.hasOwnProperty( key ) ){
 				debug('registering plugin %s', key );
@@ -213,8 +229,8 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 			}
 		}
 
-		plugin.expose('name', pkg.name);
-		plugin.expose('version', pkg.version);
+		this.plg.expose('name', pkg.name);
+		this.plg.expose('version', pkg.version);
 		
 		debug("serializer %s", !!this.options.serializer, this.basepath );
 
@@ -222,11 +238,11 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 		if( this.options.serializer  ){
 			debug("Loading serialization plugin for %s", this.basepath );
 			debug('adding server serializer for %s', this.basepath);
-			plugin.ext('onPostAuth',onPostAuth.bind( this ));
-			plugin.ext('onPreResponse', onPreResponse.bind( this ));
+			this.plg.ext('onPostAuth',onPostAuth.bind( this ));
+			this.plg.ext('onPreResponse', onPreResponse.bind( this ));
 		}
 
-		plugin.route({
+		this.plg.route({
 			path: this.basepath
 			,method:'GET'
 			,handler: function( request, reply ){
@@ -248,6 +264,7 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 				reply( data );
 			}
 		});
+		this.registed = Date.now();
 		return next();
 	}
 
@@ -270,24 +287,16 @@ Api = new Class( /** @lends module:NAME.Api.prototype */{
 	 		resource = arguments[1];
 	 		prefix   = arguments[0];
 		 	prefix   = prefix.replace(endsWithSlash,'');
-		 	resource.setOptions({
-		 		name:prefix
-		 		,apiname: this.basepath 
-		 	} );
 	 	}
 	 	this.api_cache[ prefix ] = resource;
-	 	resource.setOptions({
-	 		apiname:this.basepath
-	 		,name: resource.options.name || prefix
-	 	});
-
+	 	resource.api = this;
+	 	resource.prefix = prefix;
 	 	if( this.plg ){
 			this._register( prefix, resource );
-	 		
 	 	} 
+
 		this.url_cache = [];
 	 	return this;
-
 	 }
 
 	/**
@@ -357,20 +366,22 @@ module.exports = Api;
 </div>
 </div>
 
-<div class="modal fade" id="searchResults">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h4 class="modal-title">Search results</h4>
-      </div>
-      <div class="modal-body"></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-      </div>
-    </div><!-- /.modal-content -->
-  </div><!-- /.modal-dialog -->
-</div>
+
+    <div class="modal fade" id="searchResults">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <h4 class="modal-title">Search results</h4>
+          </div>
+          <div class="modal-body"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+          </div>
+        </div><!-- /.modal-content -->
+      </div><!-- /.modal-dialog -->
+    </div>
+
 
 <footer>
 
@@ -382,7 +393,7 @@ module.exports = Api;
 <span class="jsdoc-message">
 	Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.4.0</a>
 	
-		on 2016-07-28T15:22:22-05:00
+		on 2016-09-13T13:55:15-05:00
 	
 	using the <a href="https://github.com/docstrap/docstrap">DocStrap template</a>.
 </span>
@@ -390,7 +401,9 @@ module.exports = Api;
 
 <script src="scripts/docstrap.lib.js"></script>
 <script src="scripts/toc.js"></script>
-<script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
+    <script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
 
 <script>
 $( function () {
@@ -400,7 +413,7 @@ $( function () {
 		$this.attr( "id", $this.attr( "id" ).replace( "$", "__" ) );
 	} );
 
-	$( ".tutorial-section pre, .readme-section pre" ).each( function () {
+	$( ".tutorial-section pre, .readme-section pre, pre.prettyprint.source" ).each( function () {
 		var $this = $( this );
 
 		var example = $this.find( "code" );
@@ -436,8 +449,7 @@ $( function () {
 	} );
 	$( "#toc" ).toc( {
 		anchorName  : function ( i, heading, prefix ) {
-			var id = $( heading ).attr( "id" );
-			return id && id.replace(/\~/g, '-inner-').replace(/\./g, '-static-') || ( prefix + i );
+			return $( heading ).attr( "id" ) || ( prefix + i );
 		},
 		selectors   : "#toc-content h1,#toc-content h2,#toc-content h3,#toc-content h4",
 		showAndHide : false,
@@ -463,11 +475,13 @@ $( function () {
 <!--Google Analytics-->
 
 
-<script type="text/javascript">
-	$(document).ready(function() {
-		SearcherDisplay.init();
-	});
-</script>
+
+    <script type="text/javascript">
+        $(document).ready(function() {
+            SearcherDisplay.init();
+        });
+    </script>
+
 
 </body>
 </html>

@@ -52,16 +52,18 @@
 			</li>
 			
 		</ul>
-		<div class="col-sm-3 col-md-3">
-            <form class="navbar-form" role="search">
-                <div class="input-group">
-                    <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
-                    <div class="input-group-btn">
-                        <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+        
+            <div class="col-sm-3 col-md-3">
+                <form class="navbar-form" role="search">
+                    <div class="input-group">
+                        <input type="text" class="form-control" placeholder="Search" name="q" id="search-input">
+                        <div class="input-group-btn">
+                            <button class="btn btn-default" id="search-submit"><i class="glyphicon glyphicon-search"></i></button>
+                        </div>
                     </div>
-                </div>
-            </form>
-        </div>
+                </form>
+            </div>
+        
 	</div>
 
 </div>
@@ -230,29 +232,30 @@ Serializer = new Class({
 	,serialize:function( data, format, callback ){
 		var method_name
 		  , desired_format
-		  , default_format
 		  , mime
+		  , _data
+		  , _format
+          , _cb
 		  ;
 
-		data           = data || '';
+		_data          = data || '';
 		mime           = this._mime;
-		format = isString( format ) ? format : this.options.defaultFormat;
-	    callback       = createCallback.apply(null, Array.prototype.slice.call(arguments) );
+		_format = isString( format ) ? format : this.options.defaultFormat;
+        _cb     = createCallback(...arguments); 
 
 		// if It is already a string
 		// there is nothing to serialize
-		if( isString( data ) ){
-			return callback &amp;&amp; callback( null, data );
+		if( isString( _data ) ){
+			return _cb( null, _data );
 		}
 
-		desired_format = mime.extension( format );
-	  	method_name = "to_" + desired_format;
-		debug('desired format: %s', desired_format);
-		if( this[method_name] &amp;&amp; typeof this[method_name] === 'function'){
-			return this[method_name]( data,callback );
+		desired_format = mime.extension( _format );
+	  	method_name = `to_${desired_format}`;
+		if( typeof this[method_name] === 'function'){
+			return this[method_name]( _data, _cb );
 		}
 
-		callback( boom.unsupportedMediaType(`unsupported format ${desired_format}` ), null );
+		_cb( boom.unsupportedMediaType(`unsupported format ${desired_format}` ), null );
 	}
 
 	,convertFormat: function convertFormat( format ){
@@ -266,23 +269,22 @@ Serializer = new Class({
 	 * @param {String} contentType the content type of the string to be deserialzie
 	 * @param {Function} callback a function to call when deserialization is complete
 	 **/
-	,deserialize: function(data, format, callback ){
+	,deserialize: function(data={}, format=this.options.defaultFormat, ...args ){
 		var desired_format
 		  , method_name
 		  , mime
+          , callback
 		  ;
 
-		data     = data || {};
 		mime     = this._mime;
-		callback =  createCallback.apply(null, Array.prototype.slice.call(arguments) );
 		format   = isString( format ) ? format : this.options.defaultFormat;
-		
+		callback = createCallback( ...args );
 		if( isObject( data ) ){
 			return callback( null, data );
 		}
 
 		desired_format = mime.extension( format );
-	  	method_name    = "from_" + desired_format;
+	  	method_name    = `from_${desired_format}`;
 
 		if( isFunction( this[method_name] ) ){
 			return this[method_name]( data, callback );
@@ -322,9 +324,9 @@ Serializer = new Class({
 	 * @param {Function} callback callback function to call when deserialization is complete
 	 **/
 	,to_xml: function( data, callback ){
-		process.nextTick(function(err){
+		process.nextTick((err)=>{
 			callback(err, data == null ? data : jstoxml.toXML( this.to_jstree( data) , {header:true, indent:" "} ) );
-		}.bind( this ));
+		});
 	}
 
 	/**
@@ -344,20 +346,21 @@ Serializer = new Class({
 	 * @return {Object} An xml root element with sub tree
 	 **/
 	,to_jstree: function( data, name, depth, element){
+		let _data = data || '';
 		depth = depth == null ? 0 : depth;
-		if(data &amp;&amp; data.toJSON &amp;&amp; typeof data.toJSON === 'function' ){
-			data = data.toJSON();
+		if(typeof _data.toJSON === 'function' ){
+			_data = _data.toJSON();
 		}
-		if(data  &amp;&amp; data.toObject &amp;&amp; typeof data.toObject === 'function' ){
-			data = data.toObject();
+		if(typeof _data.toObject === 'function' ){
+			_data = _data.toObject();
 		}
-		var data_type = kindOf( data ).toLowerCase();
+		var data_type = kindOf( _data ).toLowerCase();
 
 		switch( data_type ){
 			case ARRAY:
 				if( this.options.xml.strict ){
 					element = [];
-					for(let item of data){
+					for(let item of _data){
 						element.push( this.to_jstree( item, name, depth+1 ) );
 					}
 				} else{
@@ -369,7 +372,7 @@ Serializer = new Class({
 						,_content:[]
 					};
 
-					for(let item of data){
+					for(let item of _data){
 						element._content.push( this.to_jstree( item, null, depth+1 ));
 					}
 				}
@@ -396,7 +399,7 @@ Serializer = new Class({
 						element._attrs.type = data_type;
 					}
 				}
-				for( let key in data ){
+				for( let key in _data ){
 					element._content.push( this.to_jstree( data[key], key, depth+1, element ) );
 				}
 				break;
@@ -415,7 +418,7 @@ Serializer = new Class({
 					_attrs:{
 						type: data_type
 					}
-					,_content: String( data )
+					,_content: String( _data )
 					,_name: name || VALUE
 				};
 				break;
@@ -474,20 +477,22 @@ module.exports           = Serializer;
 </div>
 </div>
 
-<div class="modal fade" id="searchResults">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <div class="modal-header">
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
-        <h4 class="modal-title">Search results</h4>
-      </div>
-      <div class="modal-body"></div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
-      </div>
-    </div><!-- /.modal-content -->
-  </div><!-- /.modal-dialog -->
-</div>
+
+    <div class="modal fade" id="searchResults">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <h4 class="modal-title">Search results</h4>
+          </div>
+          <div class="modal-body"></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+          </div>
+        </div><!-- /.modal-content -->
+      </div><!-- /.modal-dialog -->
+    </div>
+
 
 <footer>
 
@@ -499,7 +504,7 @@ module.exports           = Serializer;
 <span class="jsdoc-message">
 	Documentation generated by <a href="https://github.com/jsdoc3/jsdoc">JSDoc 3.4.0</a>
 	
-		on 2016-07-28T15:22:22-05:00
+		on 2016-09-13T13:55:15-05:00
 	
 	using the <a href="https://github.com/docstrap/docstrap">DocStrap template</a>.
 </span>
@@ -507,7 +512,9 @@ module.exports           = Serializer;
 
 <script src="scripts/docstrap.lib.js"></script>
 <script src="scripts/toc.js"></script>
-<script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
+    <script type="text/javascript" src="scripts/fulltext-search-ui.js"></script>
+
 
 <script>
 $( function () {
@@ -517,7 +524,7 @@ $( function () {
 		$this.attr( "id", $this.attr( "id" ).replace( "$", "__" ) );
 	} );
 
-	$( ".tutorial-section pre, .readme-section pre" ).each( function () {
+	$( ".tutorial-section pre, .readme-section pre, pre.prettyprint.source" ).each( function () {
 		var $this = $( this );
 
 		var example = $this.find( "code" );
@@ -553,8 +560,7 @@ $( function () {
 	} );
 	$( "#toc" ).toc( {
 		anchorName  : function ( i, heading, prefix ) {
-			var id = $( heading ).attr( "id" );
-			return id && id.replace(/\~/g, '-inner-').replace(/\./g, '-static-') || ( prefix + i );
+			return $( heading ).attr( "id" ) || ( prefix + i );
 		},
 		selectors   : "#toc-content h1,#toc-content h2,#toc-content h3,#toc-content h4",
 		showAndHide : false,
@@ -580,11 +586,13 @@ $( function () {
 <!--Google Analytics-->
 
 
-<script type="text/javascript">
-	$(document).ready(function() {
-		SearcherDisplay.init();
-	});
-</script>
+
+    <script type="text/javascript">
+        $(document).ready(function() {
+            SearcherDisplay.init();
+        });
+    </script>
+
 
 </body>
 </html>
